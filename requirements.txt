@@ -1,4 +1,13 @@
 numpy
-torch==2.4.0+cu121
-torchvision==0.19.0+cu121
-opencv-python
+torch==2.4.0 --extra-index-url https://download.pytorch.org/whl/cu121
+torchvision==0.19.0 --extra-index-url https://download.pytorch.org/whl/cu121
+imgaug
+lmdb
+numpy
+opencv-python<=4.6.0.66
+pyyaml
+rapidfuzz
+tqdm
+pyclipper
+shapely
+pillow
