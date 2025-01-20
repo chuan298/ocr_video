@@ -3,8 +3,8 @@
     "timestamp": 2.0,
     "texts": [
       {
-        "text": "HHPANDA.CC",
-        "score": 0.9966866374015808,
+        "text": "HHPANDA.CCN",
+        "score": 0.9282230138778687,
         "box": [
           76.0,
           144.0,
@@ -14,7 +14,7 @@
       },
       {
         "text": "Cũng không uổng kiếp này",
-        "score": 0.9876375198364258,
+        "score": 0.9993838667869568,
         "box": [
           440.0,
           518.0,
@@ -25,11 +25,26 @@
     ]
   },
   {
+    "timestamp": 4.0,
+    "texts": [
+      {
+        "text": "HHPANDA.CC",
+        "score": 0.9973095655441284,
+        "box": [
+          77.0,
+          144.0,
+          222.0,
+          32.0
+        ]
+      }
+    ]
+  },
+  {
     "timestamp": 10.0,
     "texts": [
       {
         "text": "Giao Thiên Nghịch Châu ra,",
-        "score": 0.9954494833946228,
+        "score": 0.9938949346542358,
         "box": [
           435.0,
           476.0,
@@ -38,8 +53,8 @@
         ]
       },
       {
-        "text": "bảo dảm ngươi không phải chết",
-        "score": 0.9453218579292297,
+        "text": "bảo đảm người không phải chết",
+        "score": 0.9726240038871765,
         "box": [
           401.0,
           513.0,
@@ -54,7 +69,7 @@
     "texts": [
       {
         "text": "HHPANDA.CG",
-        "score": 0.9571488499641418,
+        "score": 0.9908286929130554,
         "box": [
           76.0,
           144.0,
@@ -64,7 +79,7 @@
       },
       {
         "text": "Không giao thì sao?",
-        "score": 0.9737623333930969,
+        "score": 0.9980409741401672,
         "box": [
           489.0,
           513.0,
@@ -78,8 +93,8 @@
     "timestamp": 26.0,
     "texts": [
       {
-        "text": "Vietsub duy nhất, nhanh nhất tại HHPANDA CC",
-        "score": 0.9816814661026001,
+        "text": "Vietsh duy nhất nhấnh nhất i HPANDA Cc",
+        "score": 0.9030168652534485,
         "box": [
           336.0,
           539.0,
@@ -93,8 +108,8 @@
     "timestamp": 36.0,
     "texts": [
       {
-        "text": "Vietsub duy nhất, nhanh nhất tan",
-        "score": 0.9300927519798279,
+        "text": "Vietsub duy nhất nhanh nhất ta",
+        "score": 0.9469038248062134,
         "box": [
           335.0,
           537.0,
@@ -109,7 +124,7 @@
     "texts": [
       {
         "text": "HHPANDA.CCN",
-        "score": 0.9383954405784607,
+        "score": 0.9313539266586304,
         "box": [
           76.0,
           143.0,
@@ -120,41 +135,11 @@
     ]
   },
   {
-    "timestamp": 42.0,
-    "texts": [
-      {
-        "text": "lát, nhanh nhất tại HHPANDA CC",
-        "score": 0.9014828205108643,
-        "box": [
-          517.0,
-          541.0,
-          420.0,
-          36.0
-        ]
-      }
-    ]
-  },
-  {
-    "timestamp": 44.0,
-    "texts": [
-      {
-        "text": "luy nhất, nhanh nhát tại HHPANDA CC",
-        "score": 0.9244316220283508,
-        "box": [
-          455.0,
-          543.0,
-          481.0,
-          33.0
-        ]
-      }
-    ]
-  },
-  {
     "timestamp": 46.0,
     "texts": [
       {
         "text": "MPANDA.CC",
-        "score": 0.9620332717895508,
+        "score": 0.9078682661056519,
         "box": [
           99.0,
           139.0,
@@ -168,28 +153,28 @@
     "timestamp": 50.0,
     "texts": [
       {
-        "text": "PANDA.CC",
-        "score": 0.9442687034606934,
+        "text": "HHPANDA.CC",
+        "score": 0.9248260259628296,
         "box": [
-          753.0,
-          544.0,
-          182.0,
+          76.0,
+          146.0,
+          223.0,
           31.0
         ]
       }
     ]
   },
   {
-    "timestamp": 90.0,
+    "timestamp": 84.0,
     "texts": [
       {
-        "text": "Phát",
-        "score": 0.9848848581314087,
+        "text": "HHP",
+        "score": 0.9263097643852234,
         "box": [
-          7.0,
-          662.0,
-          29.0,
-          21.0
+          76.0,
+          144.0,
+          113.0,
+          32.0
         ]
       }
     ]
@@ -199,7 +184,7 @@
     "texts": [
       {
         "text": "10:34",
-        "score": 0.9311553835868835,
+        "score": 0.9158421754837036,
         "box": [
           511.0,
           655.0,
@@ -213,18 +198,8 @@
     "timestamp": 106.0,
     "texts": [
       {
-        "text": "HHP",
-        "score": 0.9106245636940002,
-        "box": [
-          76.0,
-          144.0,
-          108.0,
-          32.0
-        ]
-      },
-      {
-        "text": ")01:09 / 25:42",
-        "score": 0.9343615770339966,
+        "text": "))01:09/ 25:42",
+        "score": 0.9091965556144714,
         "box": [
           72.0,
           698.0,

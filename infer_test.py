@@ -597,8 +597,8 @@ def main():
     parser = argparse.ArgumentParser(description='OpenOCR system skip by time (sec_skip)')
     parser.add_argument('--img_path', type=str, help='Path to an input image.')
     parser.add_argument('--video_path', type=str, help='Path to an input video.')
-    parser.add_argument('--cfg_det_path', type=str, default="/var/account/ancv/OCR/OpenOCR/configs/det/dbnet/repvit_db.yml", help='Path to the detection config (YAML).')
-    parser.add_argument('--cfg_rec_path', type=str, default="/var/account/ancv/OCR/OpenOCR/configs/rec/svtrv2/svtrv2_smtr_gtc_rctc_infer.yml", help='Path to the recognition config (YAML).')
+    parser.add_argument('--cfg_det_path', type=str, default="configs/det/dbnet/repvit_db.yml", help='Path to the detection config (YAML).')
+    parser.add_argument('--cfg_rec_path', type=str, default="configs/rec/svtrv2/svtrv2_smtr_gtc_rctc_infer.yml", help='Path to the recognition config (YAML).')
     parser.add_argument('--drop_score', type=float, default=0.9, help='Recognition score threshold.')
     parser.add_argument('--output_json', type=str, default='output_results.json', help='Path to output JSON file.')
     parser.add_argument('--roi', type=str, default=None,

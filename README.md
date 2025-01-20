@@ -52,12 +52,7 @@ pip install -r requirements.txt
 ```bash
 python infer_test.py \
   --img_path /path/to/image.jpg \
-  --cfg_det_path /path/to/det_config.yml \
-  --cfg_rec_path /path/to/rec_config.yml \
   --output_json /path/to/output.json \
-  --roi "100,200,600,400" \
-  --line_y_thresh 0.5 \
-  --line_x_gap 0.3
 ```
 
 - **`--img_path`**: Path to a single image.
@@ -70,15 +65,7 @@ python infer_test.py \
 ```bash
 python infer_test.py \
   --video_path /path/to/video.mp4 \
-  --cfg_det_path /path/to/det_config.yml \
-  --cfg_rec_path /path/to/rec_config.yml \
   --output_json /path/to/output.json \
-  --line_y_thresh 0.5 \
-  --line_x_gap 0.3 \
-  --iou_thresh 0.5 \
-  --vanish_time 2.0 \
-  --min_interval 5.0 \
-  --sec_skip 1.0
 ```
 
 - **`--video_path`**: Path to the input video.
