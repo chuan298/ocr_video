@@ -350,70 +350,67 @@ class OpenDetector(object):
         return results
 
     def __call__(self,
-                 img_path=None,
-                 img_numpy_list=None,
-                 img_numpy=None,
-                 return_mask=False,
-                 **kwargs):
+             img_path=None,
+             img_numpy_list=None,
+             img_numpy=None,
+             return_mask=False,
+             **kwargs):
         """
-        对输入图像进行处理，并返回处理结果。
-
-        Args:
-            img_path (str, optional): 图像文件路径。默认为 None。
-            img_numpy_list (list, optional): 图像数据列表，每个元素为 numpy 数组。默认为 None。
-            img_numpy (numpy.ndarray, optional): 图像数据，numpy 数组格式。默认为 None。
-
-        Returns:
-            list: 包含处理结果的列表。每个元素为一个字典，包含 'boxes' 和 'elapse' 两个键。
-                'boxes' 的值为检测到的目标框点集，'elapse' 的值为处理时间。
-
-        Raises:
-            Exception: 若没有提供图像路径或 numpy 数组，则抛出异常。
-
+        Xử lý ảnh theo batch từ img_numpy_list (hoặc img_numpy) và trả về kết quả suy luận cho từng ảnh.
         """
-
+        # Xử lý đầu vào: ưu tiên dùng img_numpy, sau đó img_numpy_list
         if img_numpy is not None:
             img_numpy_list = [img_numpy]
-            num_img = 1
         elif img_path is not None:
+            # Nếu dùng img_path, bạn có thể chuyển đổi sang img_numpy_list
             img_path = get_image_file_list(img_path)
-            num_img = len(img_path)
-        elif img_numpy_list is not None:
-            num_img = len(img_numpy_list)
-        else:
+            img_numpy_list = [cv2.imread(p) for p in img_path]
+        elif img_numpy_list is None:
             raise Exception('No input image path or numpy array.')
-        results = []
-        for img_idx in range(num_img):
-            if img_numpy_list is not None:
-                img = img_numpy_list[img_idx]
-                data = {'image': img}
-            elif img_path is not None:
-                with open(img_path[img_idx], 'rb') as f:
-                    img = f.read()
-                    data = {'image': img}
-                data = self.transform(data, self.ops[:1])
+
+        # Danh sách lưu các tensor đầu vào và thông tin shape
+        images_list = []
+        shapes_list = []
+
+        # Duyệt qua từng ảnh và áp dụng transform
+        for img in img_numpy_list:
+            data = {'image': img}
             if kwargs.get('det_input_size', None) is not None:
                 data['max_sile_len'] = kwargs['det_input_size']
+            # Giả sử self.ops[1:] chứa các phép biến đổi cần thiết cho suy luận
             batch = self.transform(data, self.ops[1:])
+            # batch[0]: ảnh đã biến đổi; batch[1]: thông tin shape (ví dụ kích thước ban đầu)
+            images_list.append(batch[0])
+            shapes_list.append(batch[1])
 
-            images = np.expand_dims(batch[0], axis=0)
-            shape_list = np.expand_dims(batch[1], axis=0)
-            images = torch.from_numpy(images).to(device=self.device)
-            with torch.no_grad():
-                t_start = time.time()
-                preds = self.model(images)
-                t_cost = time.time() - t_start
-            post_result = self.post_process_class(preds, shape_list, **kwargs)
+        # Ghép các ảnh thành batch (chú ý: các ảnh cần có cùng kích thước)
+        images = np.stack(images_list, axis=0)
+        shape_list = np.stack(shapes_list, axis=0)
+        images = torch.from_numpy(images).to(device=self.device)
 
-            info = {'boxes': post_result[0]['points'], 'elapse': t_cost}
+        # Thực hiện suy luận cho cả batch một lần
+        with torch.no_grad():
+            t_start = time.time()
+            preds = self.model(images)
+            t_cost = time.time() - t_start
+
+        # Hậu xử lý kết quả theo batch
+        post_results = self.post_process_class(preds, shape_list, **kwargs)
+        
+        results = []
+        for i, result in enumerate(post_results):
+            info = {'boxes': result['points'], 'elapse': t_cost}
             if return_mask:
                 if isinstance(preds['maps'], torch.Tensor):
                     mask = preds['maps'].detach().cpu().numpy()
                 else:
                     mask = preds['maps']
-                info['mask'] = mask
+                # Nếu preds['maps'] là batch thì lấy mask tương ứng cho ảnh thứ i
+                info['mask'] = mask[i]
             results.append(info)
+
         return results
+
 
 
 @torch.no_grad()
