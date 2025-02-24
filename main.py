@@ -487,8 +487,9 @@ def process_video(
     
     # 1) Batch detection trên ảnh crop (có thể làm mờ & giảm tương phản)
     all_images = [blur_and_reduce_contrast(x[0]) for x in frames_data]
+    t_det = time.time()
     all_dt_boxes, _ = ocr_engine.infer_batch_image_det(all_images)
-    
+    print("time_det_process", time.time() - t_det)
     # Lọc box theo kích thước
     for i in range(len(all_dt_boxes)):
         all_dt_boxes[i] = filter_boxes_by_size(
@@ -557,9 +558,10 @@ def process_video(
                 frame_idx_of_crop.append(i)
                 crop_boxes.append(adjusted_box)
     
+    t_rec = time.time()
     # 3) Batch recognition trên các crop
     rec_res_all, _ = ocr_engine.infer_batch_image_rec(crops)
-    
+    print("time_rec_process", time.time() - t_rec)
     # Gán kết quả nhận dạng vào từng frame (dựa trên frame_idx_of_crop)
     final_texts_per_frame = [[] for _ in range(len(frames_data))]
     c_idx = 0
@@ -747,28 +749,28 @@ def main():
     parser.add_argument('--cfg_det_path', type=str, default="configs/det/dbnet/repvit_db.yml")
     parser.add_argument('--cfg_rec_path', type=str, default="configs/rec/svtrv2/svtrv2_smtr_gtc_rctc_infer.yml")
     parser.add_argument('--drop_score', type=float, default=0.9)
-    parser.add_argument('--det_batch_size', type=int, default=4)
-    parser.add_argument('--rec_batch_size', type=int, default=16)
-    parser.add_argument('--sec_skip', type=float, default=2.0, help='Skip frames by seconds.')
+    parser.add_argument('--det_batch_size', type=int, default=32)
+    parser.add_argument('--rec_batch_size', type=int, default=32)
+    parser.add_argument('--sec_skip', type=float, default=0.5, help='Skip frames by seconds.')
     parser.add_argument('--line_y_thresh', type=float, default=0.5)
     parser.add_argument('--line_x_gap', type=float, default=0.3)
     parser.add_argument('--iou_thresh', type=float, default=0.5)
     parser.add_argument('--vanish_time', type=float, default=2.0)
     parser.add_argument('--min_interval', type=float, default=5.0)
     parser.add_argument('--text_sim_threshold', type=float, default=0.8)
-    parser.add_argument('--roi', type=str, default="0.1,0.7,0.9,0.97", help='ROI format: x1,y1,x2,y2 (theo % hoặc tỉ lệ)')
+    parser.add_argument('--roi', type=str, default="0.1,0.6,0.9,0.97", help='ROI format: x1,y1,x2,y2 (theo % hoặc tỉ lệ)')
     parser.add_argument('--output_json', type=str, default='output_results.json')
     parser.add_argument('--output_srt', type=str, default='output_results.srt', help='Path to save SRT.')
     parser.add_argument('--generate_srt', action='store_true', default=True, help='Whether to generate SRT from results.')
     parser.add_argument('--remove_dup_iou_thresh', type=float, default=0.5)
     parser.add_argument('--remove_dup_text_sim_thresh', type=float, default=0.9)
-    parser.add_argument('--debug_det_dir', type=str, default="det_debug")
-    parser.add_argument('--debug_box_dir', type=str, default="recog_debug")
+    parser.add_argument('--debug_det_dir', type=str, default=None)
+    parser.add_argument('--debug_box_dir', type=str, default=None)
     parser.add_argument('--min_w_ratio', type=float, default=0.02)
     parser.add_argument('--min_h_ratio', type=float, default=0.02)
     parser.add_argument('--max_w_ratio', type=float, default=0.9)
     parser.add_argument('--max_h_ratio', type=float, default=0.09)
-    parser.add_argument('--num_processes', type=int, default=8)
+    parser.add_argument('--num_processes', type=int, default=4)
     args = parser.parse_args()
 
     roi = parse_roi(args.roi)
