@@ -47,11 +47,25 @@ def parse_roi(roi_str: str) -> Optional[List[float]]:
     except ValueError:
         return None
 
+# def _crop_with_offset(frame: np.ndarray, roi: Optional[List[float]]) -> Tuple[np.ndarray, int, int]:
+#     """
+#     Cắt ROI khỏi frame theo tỉ lệ phần trăm kích thước ảnh.
+#     Trả về (ảnh_cropped, offset_x, offset_y) để khôi phục tọa độ box trên ảnh gốc.
+#     """
+#     if roi is None:
+#         return frame, 0, 0
+#     x1_ratio, y1_ratio, x2_ratio, y2_ratio = roi
+#     h, w = frame.shape[:2]
+#     x1 = int(np.clip(x1_ratio * w, 0, w))
+#     x2 = int(np.clip(x2_ratio * w, 0, w))
+#     y1 = int(np.clip(y1_ratio * h, 0, h))
+#     y2 = int(np.clip(y2_ratio * h, 0, h))
+#     if x2 <= x1 or y2 <= y1:
+#         return frame, 0, 0
+#     cropped = frame[y1:y2, x1:x2]
+#     return cropped, x1, y1
+
 def _crop_with_offset(frame: np.ndarray, roi: Optional[List[float]]) -> Tuple[np.ndarray, int, int]:
-    """
-    Cắt ROI khỏi frame theo tỉ lệ phần trăm kích thước ảnh.
-    Trả về (ảnh_cropped, offset_x, offset_y) để khôi phục tọa độ box trên ảnh gốc.
-    """
     if roi is None:
         return frame, 0, 0
     x1_ratio, y1_ratio, x2_ratio, y2_ratio = roi
@@ -62,8 +76,13 @@ def _crop_with_offset(frame: np.ndarray, roi: Optional[List[float]]) -> Tuple[np
     y2 = int(np.clip(y2_ratio * h, 0, h))
     if x2 <= x1 or y2 <= y1:
         return frame, 0, 0
-    cropped = frame[y1:y2, x1:x2]
-    return cropped, x1, y1
+    # Tạo ảnh đen có kích thước ban đầu
+    padded = np.zeros_like(frame)
+    # Copy vùng ROI của frame gốc vào đúng vị trí
+    padded[y1:y2, x1:x2] = frame[y1:y2, x1:x2]
+    # Vì ảnh padded giữ nguyên kích thước ban đầu, nên offset = 0
+    return padded, 0, 0
+
 
 def iou(boxA: Tuple[float, float, float, float],
         boxB: Tuple[float, float, float, float]) -> float:
@@ -174,6 +193,45 @@ def same_line_merge(
 # Lọc box theo kích thước của ảnh crop (ROI)
 ###############################################################################
 
+# def filter_boxes_by_size(boxes: List[np.ndarray],
+#                          img_shape: Tuple[int, int],
+#                          roi: Optional[List[float]] = None,
+#                          config: Optional[Dict[str, Any]] = None) -> List[np.ndarray]:
+#     if config is None:
+#         config = {
+#             'min_w_ratio': 0.01,
+#             'min_h_ratio': 0.01,
+#             'max_w_ratio': 0.9,
+#             'max_h_ratio': 0.9
+#         }
+#     min_w_ratio = config.get('min_w_ratio', 0.01)
+#     min_h_ratio = config.get('min_h_ratio', 0.01)
+#     max_w_ratio = config.get('max_w_ratio', 0.9)
+#     max_h_ratio = config.get('max_h_ratio', 0.9)
+
+#     filtered_boxes = []
+#     img_h, img_w = img_shape
+
+#     if roi is not None:
+#         roi_x1, roi_y1, roi_x2, roi_y2 = roi
+#         roi_w_ratio = roi_x2 - roi_x1
+#         roi_h_ratio = roi_y2 - roi_y1
+#     else:
+#         roi_w_ratio = 1.0
+#         roi_h_ratio = 1.0
+
+#     min_w_ratio_roi = min_w_ratio / roi_w_ratio
+#     min_h_ratio_roi = min_h_ratio / roi_h_ratio
+#     max_w_ratio_roi = max_w_ratio / roi_w_ratio
+#     max_h_ratio_roi = max_h_ratio / roi_h_ratio
+
+#     for box in boxes:
+#         x, y, bw, bh = get_box_xywh(box)
+#         if (bw / img_w >= min_w_ratio_roi and bw / img_w <= max_w_ratio_roi and
+#             bh / img_h >= min_h_ratio_roi and bh / img_h <= max_h_ratio_roi):
+#             filtered_boxes.append(box)
+#     return filtered_boxes
+
 def filter_boxes_by_size(boxes: List[np.ndarray],
                          img_shape: Tuple[int, int],
                          roi: Optional[List[float]] = None,
@@ -212,6 +270,7 @@ def filter_boxes_by_size(boxes: List[np.ndarray],
             bh / img_h >= min_h_ratio_roi and bh / img_h <= max_h_ratio_roi):
             filtered_boxes.append(box)
     return filtered_boxes
+
 
 ###############################################################################
 # Hàm tiền xử lý crop (sử dụng get_rotate_crop_image)
@@ -333,6 +392,13 @@ def read_video_segment(video_path: str, start_frame: int, end_frame: int,
     cap.release()
     output_queue.put(None)
 
+
+def blur_and_reduce_contrast(image, kernel_size=15, sigmaX=0, contrast_alpha=0.3):
+    blurred_image = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigmaX)
+    processed_image = cv2.convertScaleAbs(blurred_image, alpha=contrast_alpha, beta=0)
+    return processed_image
+
+
 ###############################################################################
 # Hàm process_video: sử dụng multiprocessing để đọc video đồng thời
 ###############################################################################
@@ -372,8 +438,9 @@ def process_video(
     processes = []
     queues = []
     
+    t1 = time.time()
     for i in range(num_processes):
-        q = multiprocessing.Queue(maxsize=100)
+        q = multiprocessing.Queue(maxsize=512)
         start_frame = i * segment_size
         end_frame = total_frames if i == num_processes - 1 else (i + 1) * segment_size
         p = multiprocessing.Process(target=read_video_segment,
@@ -412,15 +479,14 @@ def process_video(
         logger.warning("No frames captured")
         return []
     
+    print("time_read_video", time.time() - t1)
     # Sắp xếp các frame theo thời gian
     sorted_data = sorted(zip(timestamps, frames_data), key=lambda x: x[0])
     timestamps = [item[0] for item in sorted_data]
     frames_data = [item[1] for item in sorted_data]
     
     # 1) Batch detection trên ảnh crop (có thể làm mờ & giảm tương phản)
-    all_images = [cv2.cvtColor(x[0], cv2.COLOR_BGR2RGB) if len(x[0].shape)==3 else x[0] for x in frames_data]
-    # Áp dụng hàm blur & giảm tương phản nếu cần
-    all_images = [cv2.GaussianBlur(img, (15,15), 0) for img in all_images]
+    all_images = [blur_and_reduce_contrast(x[0]) for x in frames_data]
     all_dt_boxes, _ = ocr_engine.infer_batch_image_det(all_images)
     
     # Lọc box theo kích thước
@@ -428,7 +494,6 @@ def process_video(
         all_dt_boxes[i] = filter_boxes_by_size(
             all_dt_boxes[i],
             frames_data[i][0].shape[:2],
-            roi=roi,
             config=filter_config
         )
     
@@ -436,7 +501,7 @@ def process_video(
     if debug_det_dir:
         os.makedirs(debug_det_dir, exist_ok=True)
         for i, dt_boxes_i in enumerate(all_dt_boxes):
-            dbg_img = frames_data[i][3].copy()
+            dbg_img = frames_data[i][0].copy()
             offset_x = frames_data[i][1]
             offset_y = frames_data[i][2]
             for box_ in dt_boxes_i:
