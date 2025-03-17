@@ -620,6 +620,8 @@ def track_and_deduplicate_text(
         })
 
     return video_results
+
+
 def process_video(
     ocr_engine: OpenOCR,
     video_path: str,
