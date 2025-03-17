@@ -673,3 +673,348 @@ def process_images(
     
     logger.info(f"Processed {total_images} images in {time.time() - t_start:.2f}s")
     return all_results
+
+
+
+
+def process_images(
+    ocr_engine: OpenOCR,
+    image_list: List[Union[str, np.ndarray, Image.Image]],
+    roi: Optional[List[float]] = None,
+    line_y_thresh: float = 0.5,
+    line_x_gap: float = 0.3,
+    do_merge: bool = True,
+    filter_config: Optional[Dict[str, Any]] = None,
+    apply_blur_contrast: bool = True,
+    resize_factor: float = 1.0,
+    debug_det_dir: Optional[str] = None,
+    debug_box_dir: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Process a list of images for OCR, returning text results in the same order as input images.
+    
+    Args:
+        ocr_engine: OCR engine instance
+        image_list: List of images as file paths, numpy arrays, or PIL Images
+        roi: Optional region of interest [x1, y1, x2, y2] as ratios
+        line_y_thresh: Threshold for merging lines vertically
+        line_x_gap: Maximum gap ratio for merging text horizontally 
+        do_merge: Whether to merge adjacent text boxes
+        filter_config: Configuration for filtering text boxes by size
+        apply_blur_contrast: Whether to apply blur and contrast adjustment to handle background text
+        resize_factor: Factor to resize images (e.g., 0.5 for half size)
+        debug_det_dir: Directory to save detection visualization
+        debug_box_dir: Directory to save text box crops
+        
+    Returns:
+        List of dictionaries containing detected text for each image, preserving input order
+    """
+    import os
+    import time
+    
+    if not image_list:
+        logger.warning("No images provided for processing")
+        return []
+    
+    t_start = time.time()
+    total_images = len(image_list)
+    logger.info(f"Processing {total_images} images")
+    
+    # Create debug directories if needed
+    if debug_det_dir:
+        os.makedirs(debug_det_dir, exist_ok=True)
+    if debug_box_dir:
+        os.makedirs(debug_box_dir, exist_ok=True)
+    
+    # Load and preprocess images
+    t_load = time.time()
+    processed_images = []
+    original_images = []
+    
+    for i, img_src in enumerate(image_list):
+        # Load image from various sources
+        if isinstance(img_src, str):
+            if os.path.exists(img_src):
+                img = cv2.imread(img_src)
+                if img is None:
+                    logger.warning(f"Failed to load image {i}: {img_src}")
+                    # Add placeholder to maintain order
+                    processed_images.append(None)
+                    original_images.append(None)
+                    continue
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            else:
+                logger.warning(f"Image file not found: {img_src}")
+                processed_images.append(None)
+                original_images.append(None)
+                continue
+        elif isinstance(img_src, np.ndarray):
+            img = img_src.copy()
+            # Convert BGR to RGB if needed
+            if img.shape[2] == 3 and img.dtype == np.uint8:
+                # Check if the image is in BGR format (common with OpenCV)
+                # This is a heuristic and might not always be correct
+                if np.mean(img[:,:,0]) < np.mean(img[:,:,2]):  # Typically blue channel has lower values than red
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif isinstance(img_src, Image.Image):
+            img = np.array(img_src)
+        else:
+            logger.warning(f"Unsupported image type for image {i}: {type(img_src)}")
+            processed_images.append(None)
+            original_images.append(None)
+            continue
+        
+        # Resize if needed
+        if resize_factor != 1.0:
+            h, w = img.shape[:2]
+            new_w, new_h = int(w * resize_factor), int(h * resize_factor)
+            img = cv2.resize(img, (new_w, new_h))
+        
+        # Store original image
+        original_images.append(img.copy())
+        
+        # Apply blur and contrast adjustment if enabled
+        if apply_blur_contrast:
+            img = blur_and_reduce_contrast(img, kernel_size=15, sigmaX=0, contrast_alpha=0.3)
+        
+        processed_images.append(img)
+    
+    logger.info(f"Loaded and preprocessed {len(processed_images)} images in {time.time() - t_load:.2f}s")
+    
+    # Filter out None values while keeping track of indices
+    valid_processed_images = []
+    valid_indices = []
+    
+    for i, img in enumerate(processed_images):
+        if img is not None:
+            valid_processed_images.append(img)
+            valid_indices.append(i)
+    
+    if not valid_processed_images:
+        logger.warning("No valid images to process")
+        return [{} for _ in range(total_images)]
+    
+    # Run text detection in batch
+    t_det = time.time()
+    all_dt_boxes, _ = ocr_engine.infer_batch_image_det(valid_processed_images)
+    logger.info(f"Detection completed in {time.time() - t_det:.2f}s")
+    
+    # Process results for each image
+    all_results = [{} for _ in range(total_images)]  # Initialize with empty dict to maintain indices
+    
+    for i, (img_idx, dt_boxes) in enumerate(zip(valid_indices, all_dt_boxes)):
+        # Get original image for this index
+        orig_img = original_images[img_idx]
+        
+        # Skip if no boxes detected
+        if dt_boxes is None or len(dt_boxes) == 0:
+            all_results[img_idx] = {"texts": []}
+            continue
+        
+        # Filter boxes by ROI and size
+        filtered_boxes = []
+        for box in dt_boxes:
+            # Apply size filtering
+            if filter_config:
+                x, y, bw, bh = get_box_xywh(box)
+                h, w = orig_img.shape[:2]
+                w_ratio = bw / w
+                h_ratio = bh / h
+                
+                min_w_ratio = filter_config.get('min_w_ratio', 0.01)
+                min_h_ratio = filter_config.get('min_h_ratio', 0.01)
+                max_w_ratio = filter_config.get('max_w_ratio', 0.9)
+                max_h_ratio = filter_config.get('max_h_ratio', 0.15)
+                
+                if not (min_w_ratio <= w_ratio <= max_w_ratio and 
+                        min_h_ratio <= h_ratio <= max_h_ratio):
+                    continue
+            
+            # Check if box is within ROI
+            if roi is None or is_box_in_roi(box, roi, orig_img.shape[:2]):
+                filtered_boxes.append(box)
+        
+        # Save detection debug image if requested
+        if debug_det_dir:
+            debug_img = orig_img.copy()
+            for box in filtered_boxes:
+                poly = np.array(box, dtype=np.int32)
+                cv2.polylines(debug_img, [poly], isClosed=True, color=(0,255,0), thickness=2)
+            
+            # Draw ROI if specified
+            if roi:
+                h, w = debug_img.shape[:2]
+                roi_x1, roi_y1 = int(roi[0] * w), int(roi[1] * h)
+                roi_x2, roi_y2 = int(roi[2] * w), int(roi[3] * h)
+                cv2.rectangle(debug_img, (roi_x1, roi_y1), (roi_x2, roi_y2), (0,0,255), 2)
+            
+            out_path = os.path.join(debug_det_dir, f"image_{img_idx:04d}_det.jpg")
+            cv2.imwrite(out_path, cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
+        
+        # Merge boxes into lines if requested
+        if do_merge:
+            process_boxes = same_line_merge(
+                filtered_boxes, 
+                line_y_thresh_ratio=line_y_thresh, 
+                line_x_gap_ratio=line_x_gap
+            )
+            
+            # Save merged box debug image if requested
+            if debug_det_dir:
+                merge_debug_img = orig_img.copy()
+                # Draw original boxes in green
+                for box in filtered_boxes:
+                    poly = np.array(box, dtype=np.int32)
+                    cv2.polylines(merge_debug_img, [poly], isClosed=True, color=(0,255,0), thickness=1)
+                
+                # Draw merged lines in blue with thicker lines
+                for merged_box in process_boxes:
+                    poly = np.array(merged_box, dtype=np.int32)
+                    cv2.polylines(merge_debug_img, [poly], isClosed=True, color=(255,0,0), thickness=2)
+                
+                out_path = os.path.join(debug_det_dir, f"image_{img_idx:04d}_merged.jpg")
+                cv2.imwrite(out_path, cv2.cvtColor(merge_debug_img, cv2.COLOR_RGB2BGR))
+        else:
+            process_boxes = filtered_boxes
+        
+        # Create crops for recognition
+        crops = []
+        crop_boxes = []
+        
+        for j, box in enumerate(process_boxes):
+            # Get tight crop around text
+            text_crop = get_text_crop(orig_img, box)
+            
+            # Save debug image if needed
+            if debug_box_dir:
+                debug_path = os.path.join(debug_box_dir, f"image_{img_idx:04d}_box_{j:03d}.jpg")
+                cv2.imwrite(debug_path, cv2.cvtColor(text_crop, cv2.COLOR_RGB2BGR))
+            
+            # Enhance the crop for recognition
+            enhanced_crop = enhance_text_image(text_crop)
+            
+            # Add to crops list
+            crops.append(Image.fromarray(enhanced_crop))
+            crop_boxes.append(box)
+        
+        # Skip if no crops
+        if not crops:
+            all_results[img_idx] = {"texts": []}
+            continue
+        
+        # Perform text recognition
+        t_rec = time.time()
+        rec_res_all, _ = ocr_engine.infer_batch_image_rec(crops)
+        logger.debug(f"Recognition for image {img_idx} completed in {time.time() - t_rec:.2f}s")
+        
+        # Collect recognition results
+        texts = []
+        for j, (box, rec_result) in enumerate(zip(crop_boxes, rec_res_all)):
+            text, score, _ = rec_result
+            
+            # Only keep results with high score and non-empty text
+            if score >= ocr_engine.drop_score and text.strip():
+                texts.append({
+                    "text": text,
+                    "score": float(score),
+                    "box": get_box_xywh(box)
+                })
+        
+        # Sort texts from top to bottom
+        texts = sorted(texts, key=lambda x: x["box"][1])
+        
+        # Save result for this image
+        all_results[img_idx] = {"texts": texts}
+    
+    # Ensure all images have results
+    for i in range(total_images):
+        if i not in valid_indices:
+            all_results[i] = {"texts": []}
+    
+    logger.info(f"Processed {total_images} images in {time.time() - t_start:.2f}s")
+    return all_results
+
+
+def main():
+    parser = argparse.ArgumentParser(description='OpenOCR system with time-based skipping.')
+    parser.add_argument('--img_paths', type=str, nargs='+', help='Paths to multiple input images.')
+    parser.add_argument('--video_path', type=str, help='Path to an input video.')
+    parser.add_argument('--cfg_det_path', type=str, default="configs/det/dbnet/repvit_db.yml",
+                        help='Path to the detection config (YAML).')
+    parser.add_argument('--cfg_rec_path', type=str, default="configs/rec/svtrv2/svtrv2_smtr_gtc_rctc_infer.yml",
+                        help='Path to the recognition config (YAML).')
+    parser.add_argument('--drop_score', type=float, default=0.9, help='Recognition score threshold.')
+    parser.add_argument('--output_json', type=str, default='output_results.json', help='Path to output JSON file.')
+    parser.add_argument('--roi', type=str, default=None,
+                        help='ROI in "x1,y1,x2,y2" format. Full image/video if not set.')
+    parser.add_argument('--det_batch_size', type=int, default=1, help='Batch size for detection.')
+    parser.add_argument('--rec_batch_size', type=int, default=6, help='Batch size for recognition.')
+    parser.add_argument('--line_y_thresh', type=float, default=0.5,
+                        help='Vertical ratio threshold for line merging.')
+    parser.add_argument('--line_x_gap', type=float, default=0.3,
+                        help='Horizontal gap ratio threshold for line merging.')
+    parser.add_argument('--iou_thresh', type=float, default=0.5,
+                        help='IoU threshold for matching bounding boxes.')
+    parser.add_argument('--vanish_time', type=float, default=2.0,
+                        help='Time (seconds) after which unseen texts are removed.')
+    parser.add_argument('--min_interval', type=float, default=5.0,
+                        help='Minimum time (seconds) for re-output of a text.')
+    parser.add_argument('--sec_skip', type=float, default=2.0,
+                        help='Skip threshold (seconds) for video frame processing.')
+    parser.add_argument('--do_merge', action='store_true', default=True,
+                        help='Whether to merge bounding boxes on the same line.')
+
+    args = parser.parse_args()
+
+    # Kiểm tra input
+    if (args.img_paths is None and args.video_path is None) or \
+       (args.img_paths is not None and args.video_path is not None):
+        raise ValueError("Must provide either --img_paths (multiple images) OR --video_path (single).")
+
+    roi = parse_roi(args.roi)
+
+    # Khởi tạo OCR
+    ocr_engine = OpenOCR(cfg_det_path=args.cfg_det_path,
+                         cfg_rec_path=args.cfg_rec_path,
+                         drop_score=args.drop_score,
+                         det_batch_size=args.det_batch_size,
+                         rec_batch_size=args.rec_batch_size)
+
+    if args.img_paths:
+        valid_image_paths = []
+        images = []
+        for path in args.img_paths:
+            img = cv2.imread(path)
+            if img is not None:
+                images.append(img)
+                valid_image_paths.append(path)
+            else:
+                logger.error(f"Cannot read image: {path}")
+        # Nhiều ảnh
+        final_result = process_images(ocr_engine=ocr_engine,
+                                      image_list=images,
+                                      roi=roi,
+                                      line_y_thresh=args.line_y_thresh,
+                                      line_x_gap=args.line_x_gap)
+    else:
+        # Video
+        final_result = process_video(
+            ocr_engine=ocr_engine,
+            video_path=args.video_path,
+            roi=roi,
+            line_y_thresh=args.line_y_thresh,
+            line_x_gap=args.line_x_gap,
+            do_merge=args.do_merge,
+            iou_threshold=args.iou_thresh,
+            vanish_time=args.vanish_time,
+            min_interval=args.min_interval,
+            sec_skip=args.sec_skip
+        )
+
+    with open(args.output_json, 'w', encoding='utf-8') as f:
+        json.dump(final_result, f, ensure_ascii=False, indent=2)
+    logger.info(f"Results saved to {args.output_json}.")
+
+
+if __name__ == '__main__':
+    main()
