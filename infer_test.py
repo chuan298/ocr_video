@@ -1,526 +1,3 @@
-# #!/usr/bin/env python
-# # -*- coding: utf-8 -*-
-
-# import os
-# import sys
-# import argparse
-# import time
-# import json
-# import copy
-# import cv2
-# import numpy as np
-# from PIL import Image
-# from typing import List, Tuple, Dict, Optional, Union, Any
-
-# # Đảm bảo import các module nội bộ
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-# from tools.infer_rec import OpenRecognizer
-# from tools.infer_det import OpenDetector
-# from tools.engine import Config
-# from tools.infer.utility import get_rotate_crop_image, get_minarea_rect_crop
-# from tools.utils.logging import get_logger
-
-# logger = get_logger()
-
-
-# def parse_roi(roi_str: str) -> Optional[List[int]]:
-#     """Parses a ROI string (x1,y1,x2,y2) into [x1, y1, x2, y2]."""
-#     if not roi_str:
-#         return None
-#     try:
-#         # Split the string và convert
-#         vals = [int(v.strip()) for v in roi_str.split(',')]
-#         return vals if len(vals) == 4 else None
-#     except ValueError:
-#         return None
-
-
-# def _crop_with_offset(frame: np.ndarray, roi: Optional[List[int]]) -> Tuple[np.ndarray, int, int]:
-#     """Crops an image to the ROI và returns the cropped image + offsets."""
-#     if roi is None:
-#         return frame, 0, 0
-
-#     x1, y1, x2, y2 = roi
-#     h, w = frame.shape[:2]
-
-#     # Clamp
-#     x1 = np.clip(x1, 0, w)
-#     x2 = np.clip(x2, 0, w)
-#     y1 = np.clip(y1, 0, h)
-#     y2 = np.clip(y2, 0, h)
-
-#     if x2 <= x1 or y2 <= y1:
-#         # ROI không hợp lệ => return nguyên ảnh
-#         return frame, 0, 0
-
-#     cropped = frame[y1:y2, x1:x2]
-#     return cropped, x1, y1
-
-
-# def get_box_xywh(quad: Union[List[List[float]], np.ndarray]) -> Tuple[float, float, float, float]:
-#     """Converts a quadrilateral (4 points) to (x, y, w, h)."""
-#     quad = np.array(quad)
-#     x_min, y_min = np.min(quad, axis=0)
-#     x_max, y_max = np.max(quad, axis=0)
-#     return (float(x_min), float(y_min), float(x_max - x_min), float(y_max - y_min))
-
-
-# def sorted_boxes(dt_boxes: List[Union[List[List[float]], np.ndarray]]) -> List[np.ndarray]:
-#     """Sorts detected boxes top-to-bottom, left-to-right."""
-#     boxes = np.array(dt_boxes)
-#     if len(boxes) == 0:
-#         return []
-#     # Sort y rồi sort x
-#     sorted_indices = np.lexsort((boxes[:, 0, 0], boxes[:, 0, 1]))
-#     sorted_boxes = boxes[sorted_indices]
-
-#     # Refine sorting cho các box gần nhau trên trục y
-#     for i in range(len(sorted_boxes) - 1):
-#         if abs(sorted_boxes[i + 1, 0, 1] - sorted_boxes[i, 0, 1]) < 10:
-#             if sorted_boxes[i + 1, 0, 0] < sorted_boxes[i, 0, 0]:
-#                 sorted_boxes[[i, i + 1]] = sorted_boxes[[i + 1, i]]
-#     return list(sorted_boxes)
-
-
-# def iou(boxA: Tuple[float, float, float, float], boxB: Tuple[float, float, float, float]) -> float:
-#     """Computes Intersection over Union (IoU) between two boxes."""
-#     xA, yA, wA, hA = boxA
-#     xB, yB, wB, hB = boxB
-
-#     x_start = max(xA, xB)
-#     y_start = max(yA, yB)
-#     x_end = min(xA + wA, xB + wB)
-#     y_end = min(yA + hA, yB + hB)
-
-#     inter_area = max(0, x_end - x_start) * max(0, y_end - y_start)
-#     boxA_area = wA * hA
-#     boxB_area = wB * hB
-
-#     return inter_area / float(boxA_area + boxB_area - inter_area + 1e-6)
-
-
-# def same_line_merge(dt_boxes: List[np.ndarray],
-#                     rec_res: List[List[Union[str, float]]],
-#                     line_y_thresh_ratio: float = 0.5,
-#                     line_x_gap_ratio: float = 0.3
-#                     ) -> Tuple[List[np.ndarray], List[List[Union[str, float]]]]:
-#     """Gộp các bounding boxes nằm trên cùng một dòng (dựa vào khoảng cách)."""
-#     if not dt_boxes:
-#         return [], []
-
-#     data = list(zip(dt_boxes, rec_res))
-#     # Sort theo y rồi x
-#     data.sort(key=lambda x: (x[0][0, 1], x[0][0, 0]))
-
-#     merged = []
-#     used = [False] * len(data)
-
-#     for i in range(len(data)):
-#         if used[i]:
-#             continue
-
-#         box_i, (text_i, score_i) = data[i]
-#         used[i] = True
-#         box_i = np.array(box_i)
-#         min_x, min_y = np.min(box_i, axis=0)
-#         max_x, max_y = np.max(box_i, axis=0)
-#         group_text = str(text_i)
-#         group_score = float(score_i)
-#         group_count = 1
-
-#         for j in range(i + 1, len(data)):
-#             if used[j]:
-#                 continue
-
-#             box_j, (text_j, score_j) = data[j]
-#             box_j = np.array(box_j)
-#             min_xj, min_yj = np.min(box_j, axis=0)
-#             max_xj, max_yj = np.max(box_j, axis=0)
-
-#             # Kiểm tra line (theo y)
-#             avg_h = (max_y - min_y + max_yj - min_yj) / 2.0
-#             center_i_y = (min_y + max_y) / 2.0
-#             center_j_y = (min_yj + max_yj) / 2.0
-#             if abs(center_j_y - center_i_y) <= line_y_thresh_ratio * avg_h:
-#                 # Kiểm tra gap ngang
-#                 avg_w = (max_x - min_x + max_xj - min_xj) / 2.0
-#                 gap_x = min_xj - max_x
-#                 if 0 <= gap_x < line_x_gap_ratio * avg_w:
-#                     used[j] = True
-#                     group_text += " " + str(text_j)
-#                     group_score += float(score_j)
-#                     group_count += 1
-#                     min_x = min(min_x, min_xj)
-#                     max_x = max(max_x, max_xj)
-#                     min_y = min(min_y, min_yj)
-#                     max_y = max(max_y, max_yj)
-
-#         merged_box = np.array([
-#             [min_x, min_y],
-#             [max_x, min_y],
-#             [max_x, max_y],
-#             [min_x, max_y]
-#         ], dtype=np.float32)
-#         merged.append((merged_box, (group_text, group_score / group_count)))
-
-#     if merged:
-#         merged_boxes, merged_texts = zip(*merged)
-#         return list(merged_boxes), list(merged_texts)
-#     else:
-#         return [], []
-
-
-# class OpenOCR(object):
-#     def __init__(self,
-#                  cfg_det_path: str,
-#                  cfg_rec_path: str,
-#                  drop_score: float = 0.5,
-#                  det_box_type: str = 'quad',
-#                  det_batch_size: int = 1,
-#                  rec_batch_size: int = 6):
-#         # Load model
-#         cfg_det = Config(cfg_det_path).cfg
-#         cfg_rec = Config(cfg_rec_path).cfg
-
-#         self.text_detector = OpenDetector(cfg_det)
-#         self.text_recognizer = OpenRecognizer(cfg_rec)
-#         self.det_box_type = det_box_type
-#         self.drop_score = drop_score
-#         self.det_batch_size = det_batch_size
-#         self.rec_batch_size = rec_batch_size
-
-#     def infer_batch_image_det(self,
-#                               img_numpy_list: List[np.ndarray]
-#                               ) -> Tuple[List[List[np.ndarray]], List[Dict[str, float]]]:
-#         """Phát hiện text (detection) cho list ảnh."""
-#         all_dt_boxes = []
-#         all_time_dicts = []
-
-#         # Xử lý theo batch
-#         for i in range(0, len(img_numpy_list), self.det_batch_size):
-#             batch_imgs = img_numpy_list[i: i + self.det_batch_size]
-#             batch_results = self.text_detector(img_numpy_list=batch_imgs)
-
-#             for det_result in batch_results:
-#                 dt_boxes = det_result.get('boxes', [])
-#                 time_dict = {'detection_time': det_result.get('elapse', 0.0)}
-
-#                 if dt_boxes is not None and len(dt_boxes) > 0:
-#                     dt_boxes = sorted_boxes(dt_boxes)
-#                 else:
-#                     dt_boxes = []
-#                 all_dt_boxes.append(dt_boxes)
-#                 all_time_dicts.append(time_dict)
-
-#         return all_dt_boxes, all_time_dicts
-
-#     def infer_batch_image_rec(self,
-#                               img_crop_list: List[Image.Image]
-#                               ) -> Tuple[List[List[Union[str, float, float]]], float]:
-#         """
-#         Nhận dạng text (recognition) cho list ảnh đã crop.
-#         Trả về mảng cùng kích thước với img_crop_list, mỗi phần tử: [text, score, time_cost].
-#         """
-#         rec_res_full = []
-#         total_rec_time = 0.0
-
-#         for i in range(0, len(img_crop_list), self.rec_batch_size):
-#             batch_imgs = img_crop_list[i: i + self.rec_batch_size]
-#             batch_results = self.text_recognizer(img_numpy_list=batch_imgs)
-
-#             for r in batch_results:
-#                 text = r.get('text', '')
-#                 score = r.get('score', 0.0)
-#                 elapse = r.get('elapse', 0.0)
-#                 total_rec_time += elapse
-#                 # Lưu tất cả kết quả (kể cả score thấp), để giữ thứ tự index
-#                 rec_res_full.append([text, score, elapse])
-
-#         return rec_res_full, total_rec_time
-
-#     def infer_single_image(
-#             self,
-#             img_numpy: np.ndarray,
-#             crop_infer: bool = False
-#     ) -> Tuple[Optional[List[np.ndarray]],
-#                Optional[List[List[Union[str, float]]]],
-#                Optional[Dict[str, float]]]:
-#         """Chạy OCR trên 1 ảnh đơn."""
-#         if img_numpy is None:
-#             return None, None, None
-
-#         # Detection
-#         all_dt_boxes, all_time_dicts = self.infer_batch_image_det([img_numpy])
-#         dt_boxes = all_dt_boxes[0]
-#         det_time_cost = all_time_dicts[0]['detection_time']
-
-#         if not dt_boxes:
-#             return None, None, None
-
-#         # Crop
-#         img_crop_list = []
-#         for box in dt_boxes:
-#             box_np = np.array(box).astype(np.float32)
-#             if self.det_box_type == 'quad':
-#                 img_crop = get_rotate_crop_image(img_numpy, box_np)
-#             else:
-#                 img_crop = get_minarea_rect_crop(img_numpy, box_np)
-#             img_crop_list.append(Image.fromarray(img_crop))
-
-#         # Recognition
-#         rec_res_full, total_rec_time = self.infer_batch_image_rec(img_crop_list)
-
-#         # rec_res_full có length = len(dt_boxes)
-#         # => Bắt đầu lọc theo drop_score
-#         filter_boxes = []
-#         filter_rec_res = []
-#         for box_i, rec_i in zip(dt_boxes, rec_res_full):
-#             text_i, score_i, _ = rec_i
-#             if score_i >= self.drop_score and text_i.strip():
-#                 filter_boxes.append(box_i)
-#                 filter_rec_res.append([text_i, score_i])
-
-#         if not filter_boxes:
-#             return None, None, None
-
-#         # Timing
-#         time_dict = {
-#             'time_cost': det_time_cost + total_rec_time,
-#             'detection_time': det_time_cost,
-#             'recognition_time': total_rec_time,
-#             'avg_rec_time_cost': total_rec_time / len(dt_boxes) if len(dt_boxes) else 0.0
-#         }
-#         return filter_boxes, filter_rec_res, time_dict
-
-#     def infer_batch_image(
-#             self,
-#             img_numpy_list: List[np.ndarray]
-#     ) -> List[Tuple[List[np.ndarray], List[List[Union[str, float]]], Dict[str, float]]]:
-#         """Chạy OCR cho nhiều ảnh (batch)."""
-#         all_results = []
-
-#         # 1) Detection batch
-#         all_dt_boxes, all_time_dicts = self.infer_batch_image_det(img_numpy_list)
-
-#         # 2) Cho từng ảnh, crop rồi recognition
-#         for idx, dt_boxes in enumerate(all_dt_boxes):
-#             if not dt_boxes:
-#                 all_results.append(([], [], {}))
-#                 continue
-
-#             img_numpy = img_numpy_list[idx]
-#             det_time_cost = all_time_dicts[idx]['detection_time']
-
-#             # Crop
-#             img_crop_list = []
-#             for box in dt_boxes:
-#                 box_np = np.array(box).astype(np.float32)
-#                 if self.det_box_type == 'quad':
-#                     img_crop = get_rotate_crop_image(img_numpy, box_np)
-#                 else:
-#                     img_crop = get_minarea_rect_crop(img_numpy, box_np)
-#                 img_crop_list.append(Image.fromarray(img_crop))
-
-#             # Recognition
-#             rec_res_full, total_rec_time = self.infer_batch_image_rec(img_crop_list)
-
-#             if not rec_res_full:
-#                 all_results.append(([], [], {}))
-#                 continue
-
-#             # Lọc theo drop_score
-#             filter_boxes = []
-#             filter_rec_res = []
-#             for box_i, rec_i in zip(dt_boxes, rec_res_full):
-#                 text_i, score_i, _ = rec_i
-#                 if score_i >= self.drop_score and text_i.strip():
-#                     filter_boxes.append(box_i)
-#                     filter_rec_res.append([text_i, score_i])
-
-#             avg_rec_time = total_rec_time / len(dt_boxes) if len(dt_boxes) else 0.0
-#             time_dict = {
-#                 'time_cost': det_time_cost + total_rec_time,
-#                 'detection_time': det_time_cost,
-#                 'recognition_time': total_rec_time,
-#                 'avg_rec_time_cost': avg_rec_time
-#             }
-#             all_results.append((filter_boxes, filter_rec_res, time_dict))
-
-#         return all_results
-
-
-# def process_images(
-#         ocr_engine: OpenOCR,
-#         image_paths: List[str],
-#         roi: Optional[List[int]] = None,
-#         line_y_thresh: Optional[float] = 0.5,
-#         line_x_gap: Optional[float] = 0.3
-# ) -> List[Dict[str, Any]]:
-#     """Chạy OCR cho nhiều ảnh, có thể cắt ROI rồi merge dòng."""
-#     images = []
-#     valid_image_paths = []
-#     for path in image_paths:
-#         img = cv2.imread(path)
-#         if img is not None:
-#             images.append(img)
-#             valid_image_paths.append(path)
-#         else:
-#             logger.error(f"Cannot read image: {path}")
-
-#     if not images:
-#         logger.error("No images were successfully loaded.")
-#         return []
-
-#     images_with_offset = []
-#     offsets = []
-#     for img in images:
-#         img_cropped, offset_x, offset_y = _crop_with_offset(img, roi)
-#         images_with_offset.append(img_cropped)
-#         offsets.append((offset_x, offset_y))
-
-#     # OCR batch
-#     batch_results = ocr_engine.infer_batch_image(images_with_offset)
-#     final_result = []
-
-#     for i, (dt_boxes, rec_res, _) in enumerate(batch_results):
-#         this_path = valid_image_paths[i]
-#         if not dt_boxes or not rec_res:
-#             final_result.append({"image_path": this_path, "results": []})
-#             continue
-
-#         offset_x, offset_y = offsets[i]
-
-#         # Merge lines (nếu có threshold)
-#         if line_y_thresh is not None and line_x_gap is not None:
-#             dt_boxes, rec_res = same_line_merge(dt_boxes, rec_res,
-#                                                 line_y_thresh, line_x_gap)
-
-#         image_results = []
-#         for box, (text, score) in zip(dt_boxes, rec_res):
-#             x, y, w, h = get_box_xywh(box)
-#             x += offset_x
-#             y += offset_y
-#             image_results.append({
-#                 "text": str(text),
-#                 "score": float(score),
-#                 "box": [float(x), float(y), float(w), float(h)]
-#             })
-#         final_result.append({"image_path": this_path, "results": image_results})
-
-#     return final_result
-
-
-# def process_video(
-#         ocr_engine: OpenOCR,
-#         video_path: str,
-#         roi: Optional[List[int]] = None,
-#         line_y_thresh: float = 0.5,
-#         line_x_gap: float = 0.3,
-#         do_merge: bool = True,
-#         iou_threshold: float = 0.5,
-#         vanish_time: float = 2.0,
-#         min_interval: float = 5.0,
-#         sec_skip: float = 1.0
-# ) -> List[Dict[str, Union[float, List[Dict[str, Union[str, float, List[float]]]]]]]:
-#     """
-#     Xử lý video với OCR, dùng thời gian video (current_sec) để:
-#     - skip frame (sec_skip)
-#     - vanish text sau vanish_time giây không xuất hiện
-#     - min_interval: khoảng cách tối thiểu giữa 2 lần output cùng 1 text
-#     """
-#     cap = cv2.VideoCapture(video_path)
-#     if not cap.isOpened():
-#         logger.error(f"Cannot open video: {video_path}")
-#         return []
-
-#     video_results = []
-#     active_texts: List[Dict[str, Any]] = []
-#     last_ocr_time = 0.0
-
-#     while True:
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-
-#         current_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-#         # Skip
-#         if (current_sec - last_ocr_time) < sec_skip:
-#             continue
-
-#         last_ocr_time = current_sec
-#         # Crop ROI
-#         frame_cropped, offset_x, offset_y = _crop_with_offset(frame, roi)
-
-#         # OCR
-#         dt_boxes, rec_res, _ = ocr_engine.infer_single_image(frame_cropped)
-#         if dt_boxes is None or rec_res is None:
-#             # Không detect được gì
-#             # Cũng nên xóa các text cũ trong active_texts
-#             active_texts = [t for t in active_texts
-#                             if (current_sec - t['last_seen']) < vanish_time]
-#             continue
-
-#         # Cập nhật active_texts => remove vanished
-#         active_texts = [
-#             t for t in active_texts
-#             if (current_sec - t['last_seen']) < vanish_time
-#         ]
-
-#         # Merge line nếu cần
-#         if do_merge:
-#             dt_boxes, rec_res = same_line_merge(dt_boxes, rec_res,
-#                                                 line_y_thresh, line_x_gap)
-
-#         frame_texts: List[Dict[str, Union[str, float, List[float]]]] = []
-
-#         # Xử lý logic tránh lặp text
-#         for box, (text, score) in zip(dt_boxes, rec_res):
-#             x, y, w, h = get_box_xywh(box)
-#             x += offset_x
-#             y += offset_y
-#             new_box_xywh = (x, y, w, h)
-
-#             matched_idx = -1
-#             for i, atext in enumerate(active_texts):
-#                 if iou(atext['box'], new_box_xywh) > iou_threshold \
-#                    and atext['text'] == text:
-#                     matched_idx = i
-#                     break
-
-#             if matched_idx >= 0:
-#                 # Đã thấy text này => update
-#                 active_texts[matched_idx]['last_seen'] = current_sec
-#                 # check xem đã đủ thời gian để output lại chưa
-#                 if (current_sec - active_texts[matched_idx]['last_output_time']) >= min_interval:
-#                     frame_texts.append({
-#                         "text": str(text),
-#                         "score": float(score),
-#                         "box": [float(x), float(y), float(w), float(h)]
-#                     })
-#                     active_texts[matched_idx]['last_output_time'] = current_sec
-#             else:
-#                 # Text mới
-#                 frame_texts.append({
-#                     "text": str(text),
-#                     "score": float(score),
-#                     "box": [float(x), float(y), float(w), float(h)]
-#                 })
-#                 active_texts.append({
-#                     'text': str(text),
-#                     'box': new_box_xywh,
-#                     'first_seen': current_sec,
-#                     'last_seen': current_sec,
-#                     'last_output_time': current_sec
-#                 })
-
-#         if frame_texts:
-#             video_results.append({"timestamp": current_sec, "texts": frame_texts})
-
-#     cap.release()
-#     return video_results
-
-
 import os
 import sys
 import argparse
@@ -932,6 +409,271 @@ class OpenOCR:
                 rec_res_full.append([text, score, elapse])
                 
         return rec_res_full, total_rec_time
+
+
+
+def process_images(
+    ocr_engine: OpenOCR,
+    image_list: List[Union[str, np.ndarray, Image.Image]],
+    roi: Optional[List[float]] = None,
+    line_y_thresh: float = 0.5,
+    line_x_gap: float = 0.3,
+    do_merge: bool = True,
+    filter_config: Optional[Dict[str, Any]] = None,
+    apply_blur_contrast: bool = True,
+    resize_factor: float = 1.0,
+    debug_det_dir: Optional[str] = None,
+    debug_box_dir: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Process a list of images for OCR, returning text results in the same order as input images.
+    
+    Args:
+        ocr_engine: OCR engine instance
+        image_list: List of images as file paths, numpy arrays, or PIL Images
+        roi: Optional region of interest [x1, y1, x2, y2] as ratios
+        line_y_thresh: Threshold for merging lines vertically
+        line_x_gap: Maximum gap ratio for merging text horizontally 
+        do_merge: Whether to merge adjacent text boxes
+        filter_config: Configuration for filtering text boxes by size
+        apply_blur_contrast: Whether to apply blur and contrast adjustment to handle background text
+        resize_factor: Factor to resize images (e.g., 0.5 for half size)
+        debug_det_dir: Directory to save detection visualization
+        debug_box_dir: Directory to save text box crops
+        
+    Returns:
+        List of dictionaries containing detected text for each image, preserving input order
+    """
+    import os
+    import time
+    
+    if not image_list:
+        logger.warning("No images provided for processing")
+        return []
+    
+    t_start = time.time()
+    total_images = len(image_list)
+    logger.info(f"Processing {total_images} images")
+    
+    # Create debug directories if needed
+    if debug_det_dir:
+        os.makedirs(debug_det_dir, exist_ok=True)
+    if debug_box_dir:
+        os.makedirs(debug_box_dir, exist_ok=True)
+    
+    # Load and preprocess images
+    t_load = time.time()
+    processed_images = []
+    original_images = []
+    
+    for i, img_src in enumerate(image_list):
+        # Load image from various sources
+        if isinstance(img_src, str):
+            if os.path.exists(img_src):
+                img = cv2.imread(img_src)
+                if img is None:
+                    logger.warning(f"Failed to load image {i}: {img_src}")
+                    # Add placeholder to maintain order
+                    processed_images.append(None)
+                    original_images.append(None)
+                    continue
+            else:
+                logger.warning(f"Image file not found: {img_src}")
+                processed_images.append(None)
+                original_images.append(None)
+                continue
+        elif isinstance(img_src, np.ndarray):
+            img = img_src
+        elif isinstance(img_src, Image.Image):
+            img = np.array(img_src)
+        else:
+            logger.warning(f"Unsupported image type for image {i}: {type(img_src)}")
+            processed_images.append(None)
+            original_images.append(None)
+            continue
+        
+        # Resize if needed
+        if resize_factor != 1.0:
+            h, w = img.shape[:2]
+            new_w, new_h = int(w * resize_factor), int(h * resize_factor)
+            img = cv2.resize(img, (new_w, new_h))
+        
+        # Store original image
+        original_images.append(img.copy())
+        
+        # Apply blur and contrast adjustment if enabled
+        if apply_blur_contrast:
+            img = blur_and_reduce_contrast(img, kernel_size=15, sigmaX=0, contrast_alpha=0.3)
+        
+        processed_images.append(img)
+    
+    logger.info(f"Loaded and preprocessed {len(processed_images)} images in {time.time() - t_load:.2f}s")
+    
+    # Filter out None values while keeping track of indices
+    valid_processed_images = []
+    valid_indices = []
+    
+    for i, img in enumerate(processed_images):
+        if img is not None:
+            valid_processed_images.append(img)
+            valid_indices.append(i)
+    
+    if not valid_processed_images:
+        logger.warning("No valid images to process")
+        return [{"texts": []} for _ in range(total_images)]
+    
+    # Run text detection in batch
+    t_det = time.time()
+    all_dt_boxes, _ = ocr_engine.infer_batch_image_det(valid_processed_images)
+    logger.info(f"Detection completed in {time.time() - t_det:.2f}s")
+    
+    # Initialize storage for crops and tracking information
+    all_crops = []  # Store all crops from all images
+    crop_to_image_map = []  # Maps crop index to original image index
+    crop_to_box_map = []  # Maps crop index to box index within the image
+    box_lists = []  # Stores boxes for each image
+    
+    # Process each image to prepare crops for a single batch recognition
+    for idx, (img_idx, dt_boxes) in enumerate(zip(valid_indices, all_dt_boxes)):
+        orig_img = original_images[img_idx]
+        
+        # Skip if no boxes detected
+        if dt_boxes is None or len(dt_boxes) == 0:
+            box_lists.append([])
+            continue
+        
+        # Filter boxes by ROI and size
+        filtered_boxes = []
+        for box in dt_boxes:
+            # Apply size filtering
+            if filter_config:
+                x, y, bw, bh = get_box_xywh(box)
+                h, w = orig_img.shape[:2]
+                w_ratio = bw / w
+                h_ratio = bh / h
+                
+                min_w_ratio = filter_config.get('min_w_ratio', 0.01)
+                min_h_ratio = filter_config.get('min_h_ratio', 0.01)
+                max_w_ratio = filter_config.get('max_w_ratio', 0.9)
+                max_h_ratio = filter_config.get('max_h_ratio', 0.15)
+                
+                if not (min_w_ratio <= w_ratio <= max_w_ratio and 
+                        min_h_ratio <= h_ratio <= max_h_ratio):
+                    continue
+            
+            # Check if box is within ROI
+            if roi is None or is_box_in_roi(box, roi, orig_img.shape[:2]):
+                filtered_boxes.append(box)
+        
+        # Save detection debug image if requested
+        if debug_det_dir:
+            debug_img = orig_img.copy()
+            for box in filtered_boxes:
+                poly = np.array(box, dtype=np.int32)
+                cv2.polylines(debug_img, [poly], isClosed=True, color=(0,255,0), thickness=2)
+            
+            # Draw ROI if specified
+            if roi:
+                h, w = debug_img.shape[:2]
+                roi_x1, roi_y1 = int(roi[0] * w), int(roi[1] * h)
+                roi_x2, roi_y2 = int(roi[2] * w), int(roi[3] * h)
+                cv2.rectangle(debug_img, (roi_x1, roi_y1), (roi_x2, roi_y2), (0,0,255), 2)
+            
+            out_path = os.path.join(debug_det_dir, f"image_{img_idx:04d}_det.jpg")
+            cv2.imwrite(out_path, debug_img)
+        
+        # Merge boxes into lines if requested
+        if do_merge:
+            process_boxes = same_line_merge(
+                filtered_boxes, 
+                line_y_thresh_ratio=line_y_thresh, 
+                line_x_gap_ratio=line_x_gap
+            )
+            
+            # Save merged box debug image if requested
+            if debug_det_dir:
+                merge_debug_img = orig_img.copy()
+                # Draw original boxes in green
+                for box in filtered_boxes:
+                    poly = np.array(box, dtype=np.int32)
+                    cv2.polylines(merge_debug_img, [poly], isClosed=True, color=(0,255,0), thickness=1)
+                
+                # Draw merged lines in blue with thicker lines
+                for merged_box in process_boxes:
+                    poly = np.array(merged_box, dtype=np.int32)
+                    cv2.polylines(merge_debug_img, [poly], isClosed=True, color=(255,0,0), thickness=2)
+                
+                out_path = os.path.join(debug_det_dir, f"image_{img_idx:04d}_merged.jpg")
+                cv2.imwrite(out_path, merge_debug_img)
+        else:
+            process_boxes = filtered_boxes
+        
+        # Store process_boxes for this image
+        box_lists.append(process_boxes)
+        
+        # Create crops for each box in this image
+        for box_idx, box in enumerate(process_boxes):
+            # Get tight crop around text
+            text_crop = get_text_crop(orig_img, box)
+            
+            # Save debug image if needed
+            if debug_box_dir:
+                debug_path = os.path.join(debug_box_dir, f"image_{img_idx:04d}_box_{box_idx:03d}.jpg")
+                cv2.imwrite(debug_path, text_crop)
+            
+            # Enhance the crop for recognition
+            enhanced_crop = enhance_text_image(text_crop)
+            
+            # Add to crops list and track mapping
+            all_crops.append(cv2.cvtColor(enhanced_crop, cv2.COLOR_BGR2RGB))
+            crop_to_image_map.append(img_idx)
+            crop_to_box_map.append(box_idx)
+    
+    # Run batch recognition on all crops at once
+    t_rec = time.time()
+    if all_crops:
+        rec_res_all, _ = ocr_engine.infer_batch_image_rec(all_crops)
+        logger.info(f"Recognition completed in {time.time() - t_rec:.2f}s for {len(all_crops)} text regions")
+    else:
+        rec_res_all = []
+        logger.info("No text regions found for recognition")
+    
+    # Initialize results for all images
+    all_results = [{} for _ in range(total_images)]
+    
+    # Group recognition results by original image
+    image_text_results = {img_idx: [] for img_idx in valid_indices}
+    
+    # Process recognition results and map back to original images
+    for crop_idx, (rec_result, img_idx, box_idx) in enumerate(zip(rec_res_all, crop_to_image_map, crop_to_box_map)):
+        text, score, _ = rec_result
+        
+        # Only keep results with high score and non-empty text
+        if score >= ocr_engine.drop_score and text.strip():
+            # Get corresponding box
+            box = box_lists[valid_indices.index(img_idx)][box_idx]
+            
+            # Add to image results
+            image_text_results[img_idx].append({
+                "text": text,
+                "score": float(score),
+                "box": get_box_xywh(box)
+            })
+    
+    # Sort text results by vertical position and assign to final results
+    for img_idx, texts in image_text_results.items():
+        # Sort texts from top to bottom
+        sorted_texts = sorted(texts, key=lambda x: x["box"][1])
+        all_results[img_idx] = {"texts": sorted_texts}
+    
+    # Ensure all images have results
+    for i in range(total_images):
+        if i not in valid_indices or "texts" not in all_results[i]:
+            all_results[i] = {"texts": []}
+    
+    logger.info(f"Processed {total_images} images in {time.time() - t_start:.2f}s")
+    return all_results
+
 
 
 

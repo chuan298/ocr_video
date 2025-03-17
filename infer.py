@@ -477,20 +477,13 @@ def process_images(
                     processed_images.append(None)
                     original_images.append(None)
                     continue
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             else:
                 logger.warning(f"Image file not found: {img_src}")
                 processed_images.append(None)
                 original_images.append(None)
                 continue
         elif isinstance(img_src, np.ndarray):
-            img = img_src.copy()
-            # Convert BGR to RGB if needed
-            if img.shape[2] == 3 and img.dtype == np.uint8:
-                # Check if the image is in BGR format (common with OpenCV)
-                # This is a heuristic and might not always be correct
-                if np.mean(img[:,:,0]) < np.mean(img[:,:,2]):  # Typically blue channel has lower values than red
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = img_src
         elif isinstance(img_src, Image.Image):
             img = np.array(img_src)
         else:
@@ -527,23 +520,26 @@ def process_images(
     
     if not valid_processed_images:
         logger.warning("No valid images to process")
-        return [{} for _ in range(total_images)]
+        return [{"texts": []} for _ in range(total_images)]
     
     # Run text detection in batch
     t_det = time.time()
     all_dt_boxes, _ = ocr_engine.infer_batch_image_det(valid_processed_images)
     logger.info(f"Detection completed in {time.time() - t_det:.2f}s")
     
-    # Process results for each image
-    all_results = [{} for _ in range(total_images)]  # Initialize with empty dict to maintain indices
+    # Initialize storage for crops and tracking information
+    all_crops = []  # Store all crops from all images
+    crop_to_image_map = []  # Maps crop index to original image index
+    crop_to_box_map = []  # Maps crop index to box index within the image
+    box_lists = []  # Stores boxes for each image
     
-    for i, (img_idx, dt_boxes) in enumerate(zip(valid_indices, all_dt_boxes)):
-        # Get original image for this index
+    # Process each image to prepare crops for a single batch recognition
+    for idx, (img_idx, dt_boxes) in enumerate(zip(valid_indices, all_dt_boxes)):
         orig_img = original_images[img_idx]
         
         # Skip if no boxes detected
         if dt_boxes is None or len(dt_boxes) == 0:
-            all_results[img_idx] = {"texts": []}
+            box_lists.append([])
             continue
         
         # Filter boxes by ROI and size
@@ -584,7 +580,7 @@ def process_images(
                 cv2.rectangle(debug_img, (roi_x1, roi_y1), (roi_x2, roi_y2), (0,0,255), 2)
             
             out_path = os.path.join(debug_det_dir, f"image_{img_idx:04d}_det.jpg")
-            cv2.imwrite(out_path, cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(out_path, debug_img)
         
         # Merge boxes into lines if requested
         if do_merge:
@@ -608,62 +604,71 @@ def process_images(
                     cv2.polylines(merge_debug_img, [poly], isClosed=True, color=(255,0,0), thickness=2)
                 
                 out_path = os.path.join(debug_det_dir, f"image_{img_idx:04d}_merged.jpg")
-                cv2.imwrite(out_path, cv2.cvtColor(merge_debug_img, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(out_path, merge_debug_img)
         else:
             process_boxes = filtered_boxes
         
-        # Create crops for recognition
-        crops = []
-        crop_boxes = []
+        # Store process_boxes for this image
+        box_lists.append(process_boxes)
         
-        for j, box in enumerate(process_boxes):
+        # Create crops for each box in this image
+        for box_idx, box in enumerate(process_boxes):
             # Get tight crop around text
             text_crop = get_text_crop(orig_img, box)
             
             # Save debug image if needed
             if debug_box_dir:
-                debug_path = os.path.join(debug_box_dir, f"image_{img_idx:04d}_box_{j:03d}.jpg")
-                cv2.imwrite(debug_path, cv2.cvtColor(text_crop, cv2.COLOR_RGB2BGR))
+                debug_path = os.path.join(debug_box_dir, f"image_{img_idx:04d}_box_{box_idx:03d}.jpg")
+                cv2.imwrite(debug_path, text_crop)
             
             # Enhance the crop for recognition
             enhanced_crop = enhance_text_image(text_crop)
             
-            # Add to crops list
-            crops.append(Image.fromarray(enhanced_crop))
-            crop_boxes.append(box)
+            # Add to crops list and track mapping
+            all_crops.append(cv2.cvtColor(enhanced_crop, cv2.COLOR_BGR2RGB))
+            crop_to_image_map.append(img_idx)
+            crop_to_box_map.append(box_idx)
+    
+    # Run batch recognition on all crops at once
+    t_rec = time.time()
+    if all_crops:
+        rec_res_all, _ = ocr_engine.infer_batch_image_rec(all_crops)
+        logger.info(f"Recognition completed in {time.time() - t_rec:.2f}s for {len(all_crops)} text regions")
+    else:
+        rec_res_all = []
+        logger.info("No text regions found for recognition")
+    
+    # Initialize results for all images
+    all_results = [{} for _ in range(total_images)]
+    
+    # Group recognition results by original image
+    image_text_results = {img_idx: [] for img_idx in valid_indices}
+    
+    # Process recognition results and map back to original images
+    for crop_idx, (rec_result, img_idx, box_idx) in enumerate(zip(rec_res_all, crop_to_image_map, crop_to_box_map)):
+        text, score, _ = rec_result
         
-        # Skip if no crops
-        if not crops:
-            all_results[img_idx] = {"texts": []}
-            continue
-        
-        # Perform text recognition
-        t_rec = time.time()
-        rec_res_all, _ = ocr_engine.infer_batch_image_rec(crops)
-        logger.debug(f"Recognition for image {img_idx} completed in {time.time() - t_rec:.2f}s")
-        
-        # Collect recognition results
-        texts = []
-        for j, (box, rec_result) in enumerate(zip(crop_boxes, rec_res_all)):
-            text, score, _ = rec_result
+        # Only keep results with high score and non-empty text
+        if score >= ocr_engine.drop_score and text.strip():
+            # Get corresponding box
+            box = box_lists[valid_indices.index(img_idx)][box_idx]
             
-            # Only keep results with high score and non-empty text
-            if score >= ocr_engine.drop_score and text.strip():
-                texts.append({
-                    "text": text,
-                    "score": float(score),
-                    "box": get_box_xywh(box)
-                })
-        
+            # Add to image results
+            image_text_results[img_idx].append({
+                "text": text,
+                "score": float(score),
+                "box": get_box_xywh(box)
+            })
+    
+    # Sort text results by vertical position and assign to final results
+    for img_idx, texts in image_text_results.items():
         # Sort texts from top to bottom
-        texts = sorted(texts, key=lambda x: x["box"][1])
-        
-        # Save result for this image
-        all_results[img_idx] = {"texts": texts}
+        sorted_texts = sorted(texts, key=lambda x: x["box"][1])
+        all_results[img_idx] = {"texts": sorted_texts}
     
     # Ensure all images have results
     for i in range(total_images):
-        if i not in valid_indices:
+        if i not in valid_indices or "texts" not in all_results[i]:
             all_results[i] = {"texts": []}
     
     logger.info(f"Processed {total_images} images in {time.time() - t_start:.2f}s")
