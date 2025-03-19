@@ -325,6 +325,7 @@ class OpenOCR:
     def __init__(self,
                  cfg_det_path: str,
                  cfg_rec_path: str,
+                 type_rec: str,
                  drop_score: float = 0.5,
                  det_box_type: str = 'quad',
                  det_batch_size: int = 1,
@@ -337,6 +338,7 @@ class OpenOCR:
 
         self.text_detector = OpenDetector(cfg_det)
         self.text_recognizer = OpenRecognizer(cfg_rec)
+        self.type_rec = type_rec
 
         self.det_box_type = det_box_type
         self.drop_score = drop_score
@@ -388,7 +390,7 @@ class OpenOCR:
         # Convert all images to PIL format
         pil_images = []
         for img in img_list:
-            if isinstance(img, np.ndarray):
+            if self.type_rec == "vi":
                 pil_images.append(Image.fromarray(img))
             else:
                 pil_images.append(img)
